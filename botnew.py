@@ -1,10 +1,10 @@
 import os
+import time
+import requests
 import anthropic
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -32,40 +32,57 @@ SYSTEM_PROMPT = """Ты — умная ИИ-команда для YouTube и Tik
 Отвечай на русском языке, структурированно, с эмодзи, конкретно и без воды.
 Если непонятно что именно нужно — уточни одним коротким вопросом."""
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Привет! Я твоя ИИ-команда для YouTube.\n\n"
-        "Просто напиши мне что нужно:\n\n"
-        "💬 «Какие ниши сейчас в тренде?»\n"
-        "💬 «Сделай промпты для видео про ИИ»\n"
-        "💬 «Как смонтировать шорт на 60 секунд?»\n\n"
-        "Я сам пойму что тебе нужно и помогу! 🚀"
+BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+def send_message(chat_id, text):
+    requests.post(f"{BASE_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
+
+def get_updates(offset=None):
+    params = {"timeout": 30, "offset": offset}
+    resp = requests.get(f"{BASE_URL}/getUpdates", params=params)
+    return resp.json().get("result", [])
+
+def ask_claude(text):
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": text}]
     )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    thinking = await update.message.reply_text("⏳ Думаю...")
-
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_text}]
-        )
-        result = response.content[0].text
-        await thinking.delete()
-        await update.message.reply_text(result)
-    except Exception as e:
-        await thinking.delete()
-        await update.message.reply_text(f"Ошибка: {str(e)}")
+    return response.content[0].text
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущен!")
-    app.run_polling(drop_pending_updates=True)
+    offset = None
+    while True:
+        try:
+            updates = get_updates(offset)
+            for update in updates:
+                offset = update["update_id"] + 1
+                message = update.get("message", {})
+                chat_id = message.get("chat", {}).get("id")
+                text = message.get("text", "")
+                if not chat_id or not text:
+                    continue
+                if text == "/start":
+                    send_message(chat_id,
+                        "👋 Привет! Я твоя ИИ-команда для YouTube.\n\n"
+                        "Просто напиши мне что нужно:\n\n"
+                        "💬 «Какие ниши сейчас в тренде?»\n"
+                        "💬 «Сделай промпты для видео про ИИ»\n"
+                        "💬 «Как смонтировать шорт на 60 секунд?»\n\n"
+                        "Я сам пойму что тебе нужно и помогу! 🚀"
+                    )
+                else:
+                    send_message(chat_id, "⏳ Думаю...")
+                    reply = ask_claude(text)
+                    send_message(chat_id, reply)
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
